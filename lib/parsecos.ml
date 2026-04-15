@@ -194,6 +194,9 @@ module Csc_matrix = struct
 end
 
 module Ecos_data = struct
+  (* This is the current pure problem-data surface for ECOS_BB setup.
+     Exponential-cone support is not modeled yet, so [e] is always 0, and
+     solver/runtime settings such as [settings_bb] are intentionally out of scope. *)
   type t =
     { n : int
     ; m : int
@@ -303,6 +306,7 @@ module Problem = struct
     ; p = List.length equality_rows
     ; l = List.length linear_rows
     ; q
+    (* Exponential-cone blocks are not modeled yet. *)
     ; e = 0
     ; g
     ; a
