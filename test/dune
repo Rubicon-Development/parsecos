@@ -2,5 +2,6 @@
  (name test_parsecos)
  (modules test_parsecos)
  (libraries core parsecos yojson)
- (preprocess (pps ppx_jane))
+ (preprocess
+  (pps ppx_jane))
  (inline_tests))

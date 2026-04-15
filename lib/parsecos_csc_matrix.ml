@@ -1,5 +1,5 @@
 open! Core
-    open Ppx_yojson_conv_lib.Yojson_conv.Primitives
+open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
 type t =
   { pr : float array
@@ -16,7 +16,8 @@ type triplet =
 
 let of_triplets ~nrows:_ ~ncols triplets =
   let by_col = Array.init ncols ~f:(fun _ -> []) in
-  List.iter triplets ~f:(fun { row; col; value } -> by_col.(col) <- (row, value) :: by_col.(col));
+  List.iter triplets ~f:(fun { row; col; value } ->
+    by_col.(col) <- (row, value) :: by_col.(col));
   let nnz = List.length triplets in
   let pr = Array.create ~len:nnz 0.0 in
   let ir = Array.create ~len:nnz 0 in
@@ -33,3 +34,4 @@ let of_triplets ~nrows:_ ~ncols triplets =
   done;
   jc.(ncols) <- !position;
   { pr; jc; ir }
+;;

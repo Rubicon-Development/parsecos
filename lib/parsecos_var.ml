@@ -42,6 +42,7 @@ let next_id =
     let current = !id in
     id := current + 1;
     current
+;;
 
 let create ~name ~domain = { Scalar.id = next_id (); name; domain }
 let continuous name = create ~name ~domain:Domain.Continuous
@@ -51,11 +52,15 @@ let name (t : t) = t.name
 let domain (t : t) = t.domain
 
 let array1 ~name ~domain ~length : array1 =
-  if length < 0 then failwith (Printf.sprintf "array1 %s length must be non-negative" name);
+  if length < 0
+  then failwith (Printf.sprintf "array1 %s length must be non-negative" name);
   { name
   ; domain
-  ; vars = Array.init length ~f:(fun index -> create ~name:(Printf.sprintf "%s[%d]" name index) ~domain)
+  ; vars =
+      Array.init length ~f:(fun index ->
+        create ~name:(Printf.sprintf "%s[%d]" name index) ~domain)
   }
+;;
 
 let array2 ~name ~domain ~dim1 ~dim2 : array2 =
   if dim1 < 0 then failwith (Printf.sprintf "array2 %s dim1 must be non-negative" name);
@@ -64,19 +69,24 @@ let array2 ~name ~domain ~dim1 ~dim2 : array2 =
   ; domain
   ; vars =
       Array.init dim1 ~f:(fun i ->
-        Array.init dim2 ~f:(fun j -> create ~name:(Printf.sprintf "%s[%d,%d]" name i j) ~domain))
+        Array.init dim2 ~f:(fun j ->
+          create ~name:(Printf.sprintf "%s[%d,%d]" name i j) ~domain))
   }
+;;
 
 let get1 (family : array1) index =
   if index < 0 || index >= Array.length family.vars
   then failwith (Printf.sprintf "index %d out of bounds for %s" index family.name)
   else family.vars.(index)
+;;
 
 let get2 (family : array2) i j =
   if i < 0 || i >= Array.length family.vars
   then failwith (Printf.sprintf "index %d out of bounds for %s dimension 1" i family.name)
-  else
+  else (
     let row = family.vars.(i) in
     if j < 0 || j >= Array.length row
-    then failwith (Printf.sprintf "index %d out of bounds for %s dimension 2" j family.name)
-    else row.(j)
+    then
+      failwith (Printf.sprintf "index %d out of bounds for %s dimension 2" j family.name)
+    else row.(j))
+;;
