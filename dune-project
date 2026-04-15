@@ -19,7 +19,7 @@
  (name parsecos)
  (synopsis "A short synopsis")
  (description "A longer description")
- (depends ocaml core ppx_jane)
+ (depends ocaml core ppx_jane ppx_yojson_conv yojson angstrom)
  (tags
   ("add topics" "to describe" your project)))
 
