@@ -1,0 +1,4 @@
+(library
+ (name parsecos)
+ (libraries core)
+ (preprocess (pps ppx_jane)))
