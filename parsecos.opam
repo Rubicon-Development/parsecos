@@ -17,6 +17,9 @@ depends: [
   "ppx_yojson_conv"
   "yojson"
   "angstrom"
+  "core_unix"
+  "cohttp-lwt-unix"
+  "lwt"
   "odoc" {with-doc}
 ]
 build: [

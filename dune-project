@@ -19,7 +19,16 @@
  (name parsecos)
  (synopsis "A short synopsis")
  (description "A longer description")
- (depends ocaml core ppx_jane ppx_yojson_conv yojson angstrom)
+ (depends
+  ocaml
+  core
+  ppx_jane
+  ppx_yojson_conv
+  yojson
+  angstrom
+  core_unix
+  cohttp-lwt-unix
+  lwt)
  (tags
   ("add topics" "to describe" your project)))
 

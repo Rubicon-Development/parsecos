@@ -1,4 +1,4 @@
 (executable
  (public_name parsecos)
  (name main)
- (libraries parsecos))
+ (libraries parsecos core yojson lwt cohttp-lwt-unix))
