@@ -1,11 +1,12 @@
 open! Core
+    open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
 type t =
   { pr : float array
   ; jc : int array
   ; ir : int array
   }
-[@@deriving sexp_of]
+[@@deriving sexp_of, yojson]
 
 type triplet =
   { row : int

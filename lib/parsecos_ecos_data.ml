@@ -1,4 +1,5 @@
 open! Core
+open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
 type t =
   { n : int
@@ -17,4 +18,4 @@ type t =
   ; column_names : string array
   ; objective_offset : float
   }
-[@@deriving sexp_of]
+[@@deriving sexp_of, yojson]

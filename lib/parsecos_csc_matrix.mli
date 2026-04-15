@@ -14,3 +14,5 @@ type triplet =
   }
 
 val of_triplets : nrows:int -> ncols:int -> triplet list -> t
+val t_of_yojson : Ppx_yojson_conv_lib.Yojson.Safe.t -> t
+val yojson_of_t : t -> Ppx_yojson_conv_lib.Yojson.Safe.t

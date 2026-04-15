@@ -17,4 +17,7 @@ type t =
   ; column_names : string array
   ; objective_offset : float
   }
-[@@deriving sexp_of]
+[@@deriving sexp_of, yojson]
+
+val t_of_yojson : Yojson.Safe.t -> t
+val yojson_of_t : t -> Yojson.Safe.t
