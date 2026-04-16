@@ -83,6 +83,14 @@ let print_parse_result = function
   | Error error -> print_s [%sexp (error : Parsecos.Error.t)]
 ;;
 
+let print_template_result = function
+  | Ok template ->
+    Parsecos.Ecos_template.yojson_of_t template
+    |> Yojson.Safe.pretty_to_string
+    |> print_endline
+  | Error error -> print_s [%sexp (error : Parsecos.Error.t)]
+;;
+
 let%expect_test "variable ordering and integrality metadata" =
   let x = Var.continuous "x" in
   let b = Var.boolean "b" in
@@ -302,7 +310,8 @@ let%expect_test "time indexed mixed integer socp example" =
 
 let%expect_test "json input elaborates with declared unused variables preserved" =
   let model : Parsecos.Parsed_ast.model =
-    { vars =
+    { params = []
+    ; vars =
         [ Scalar { name = "x_json"; domain = Continuous }
         ; Array1 { name = "on_json"; domain = Boolean; length = 2 }
         ; Scalar { name = "unused_json"; domain = Integer }
@@ -335,6 +344,127 @@ let%expect_test "json input elaborates with declared unused variables preserved"
      (p 0) (m 1) (l 1) (q ()) (a ()) (b ())
      (g ((pr (1)) (jc (0 0 0 1 1)) (ir (0)))) (h (1)) (bool_vars_idx (1 2))
      (int_vars_idx (3)) (objective_offset 0))
+    |}]
+;;
+
+let%expect_test "dsl template preserves affine parameter coefficients" =
+  let text =
+    {|
+params:
+  alpha
+  price[2]
+  demand[2]
+  cap[1]
+
+vars:
+  continuous x[2]
+
+minimize:
+  (2 * price[0] - alpha + 3) * x[0] + price[1] * x[1] + demand[0]
+
+subject to:
+  x[0] + x[1] = demand[1]
+  price[0] * x[0] <= cap[0]
+  x[1] >= 0
+|}
+  in
+  print_template_result (Parsecos.ecos_template_of_text text);
+  [%expect
+    {|
+    {
+      "params": [
+        { "name": "alpha", "dimensions": [] },
+        { "name": "price", "dimensions": [ 2 ] },
+        { "name": "demand", "dimensions": [ 2 ] },
+        { "name": "cap", "dimensions": [ 1 ] }
+      ],
+      "n": 2,
+      "m": 2,
+      "p": 1,
+      "l": 2,
+      "q": [],
+      "e": 0,
+      "g": {
+        "pr": [
+          {
+            "constant": 0.0,
+            "terms": [
+              { "param": "price", "indices": [ 0 ], "coefficient": 1.0 }
+            ]
+          },
+          { "constant": -1.0, "terms": [] }
+        ],
+        "jc": [ 0, 1, 2 ],
+        "ir": [ 0, 1 ]
+      },
+      "a": {
+        "pr": [
+          { "constant": 1.0, "terms": [] }, { "constant": 1.0, "terms": [] }
+        ],
+        "jc": [ 0, 1, 2 ],
+        "ir": [ 0, 0 ]
+      },
+      "c": [
+        {
+          "constant": 3.0,
+          "terms": [
+            { "param": "alpha", "indices": [], "coefficient": -1.0 },
+            { "param": "price", "indices": [ 0 ], "coefficient": 2.0 }
+          ]
+        },
+        {
+          "constant": 0.0,
+          "terms": [ { "param": "price", "indices": [ 1 ], "coefficient": 1.0 } ]
+        }
+      ],
+      "h": [
+        {
+          "constant": 0.0,
+          "terms": [ { "param": "cap", "indices": [ 0 ], "coefficient": 1.0 } ]
+        },
+        { "constant": 0.0, "terms": [] }
+      ],
+      "b": [
+        {
+          "constant": 0.0,
+          "terms": [
+            { "param": "demand", "indices": [ 1 ], "coefficient": 1.0 }
+          ]
+        }
+      ],
+      "bool_vars_idx": [],
+      "int_vars_idx": [],
+      "column_names": [ "x[0]", "x[1]" ],
+      "objective_offset": {
+        "constant": 0.0,
+        "terms": [ { "param": "demand", "indices": [ 0 ], "coefficient": 1.0 } ]
+      }
+    }
+    |}]
+;;
+
+let%expect_test "dsl template rejects parameter products" =
+  let text =
+    {|
+params:
+  alpha
+  beta
+
+vars:
+  continuous x
+
+minimize:
+  alpha * beta * x
+
+subject to:
+  x >= 0
+|}
+  in
+  print_template_result (Parsecos.ecos_template_of_text text);
+  [%expect
+    {|
+    (Nonlinear_expression
+     "products may only multiply a parameter-affine scalar by a parameter-free affine expression")
     |}]
 ;;
 

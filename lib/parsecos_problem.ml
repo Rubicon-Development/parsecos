@@ -4,9 +4,12 @@ type t =
   { objective : Parsecos_affine.t
   ; constraints : Parsecos_constraint.t list
   ; declared_variables : Parsecos_var.t list option
+  ; declared_parameters : Parsecos_param.t list
   }
 
-let minimize objective = { objective; constraints = []; declared_variables = None }
+let minimize objective =
+  { objective; constraints = []; declared_variables = None; declared_parameters = [] }
+;;
 
 let subject_to problem constraints =
   { problem with constraints = problem.constraints @ constraints }
@@ -16,10 +19,14 @@ let with_declared_variables problem declared_variables =
   { problem with declared_variables = Some declared_variables }
 ;;
 
+let with_declared_parameters problem declared_parameters =
+  { problem with declared_parameters }
+;;
+
 module Row = struct
   type t =
-    { coeffs : float Map.M(Parsecos_var.Scalar).t
-    ; rhs : float
+    { coeffs : Parsecos_formula.t Map.M(Parsecos_var.Scalar).t
+    ; rhs : Parsecos_formula.t
     }
 end
 
@@ -43,7 +50,7 @@ let used_variables problem =
 ;;
 
 let dense_vector ~columns coeffs =
-  let vector = Array.create ~len:(Map.length columns) 0.0 in
+  let vector = Array.create ~len:(Map.length columns) Parsecos_formula.zero in
   Map.iteri coeffs ~f:(fun ~key:var ~data:coefficient ->
     let column = Map.find_exn columns var in
     vector.(column) <- coefficient);
@@ -52,19 +59,25 @@ let dense_vector ~columns coeffs =
 
 let eq_row expr rhs =
   { Row.coeffs = Parsecos_affine.terms expr
-  ; rhs = rhs -. Parsecos_affine.constant_term expr
+  ; rhs =
+      Parsecos_formula.sub
+        (Parsecos_formula.constant rhs)
+        (Parsecos_affine.constant_term expr)
   }
 ;;
 
 let le_row expr rhs =
   { Row.coeffs = Parsecos_affine.terms expr
-  ; rhs = rhs -. Parsecos_affine.constant_term expr
+  ; rhs =
+      Parsecos_formula.sub
+        (Parsecos_formula.constant rhs)
+        (Parsecos_affine.constant_term expr)
   }
 ;;
 
 let soc_rows exprs =
   List.map exprs ~f:(fun expr ->
-    { Row.coeffs = Map.map (Parsecos_affine.terms expr) ~f:Float.neg
+    { Row.coeffs = Map.map (Parsecos_affine.terms expr) ~f:(Parsecos_formula.scale (-1.0))
     ; rhs = Parsecos_affine.constant_term expr
     })
 ;;
@@ -73,13 +86,11 @@ let triplets_of_rows ~columns rows =
   List.concat_mapi rows ~f:(fun row_index row ->
     Map.to_alist row.Row.coeffs
     |> List.map ~f:(fun (var, coefficient) ->
-      { Parsecos_csc_matrix.row = row_index
-      ; col = Map.find_exn columns var
-      ; value = coefficient
-      }))
+      ({ row = row_index; col = Map.find_exn columns var; value = coefficient }
+       : Parsecos_ecos_template.Matrix.triplet)))
 ;;
 
-let to_ecos_data problem =
+let to_ecos_template problem =
   let variables = used_variables problem in
   let columns =
     List.mapi variables ~f:(fun index var -> var, index)
@@ -109,13 +120,13 @@ let to_ecos_data problem =
     then None
     else
       Some
-        (Parsecos_csc_matrix.of_triplets
+        (Parsecos_ecos_template.Matrix.of_triplets
            ~nrows:(List.length equality_rows)
            ~ncols:(List.length variables)
            (triplets_of_rows ~columns equality_rows))
   in
   let g =
-    Parsecos_csc_matrix.of_triplets
+    Parsecos_ecos_template.Matrix.of_triplets
       ~nrows:(List.length g_rows)
       ~ncols:(List.length variables)
       (triplets_of_rows ~columns g_rows)
@@ -133,20 +144,77 @@ let to_ecos_data problem =
       | `Int index -> bools, index :: ints)
     |> fun (bools, ints) -> Array.of_list (List.rev bools), Array.of_list (List.rev ints)
   in
-  { Parsecos_ecos_data.n = List.length variables
-  ; m = List.length g_rows
-  ; p = List.length equality_rows
-  ; l = List.length linear_rows
-  ; q
-  ; e = 0
-  ; g
-  ; a
-  ; c
-  ; h
-  ; b = (if List.is_empty equality_rows then None else Some b)
-  ; bool_vars_idx
-  ; int_vars_idx
-  ; column_names
-  ; objective_offset = Parsecos_affine.constant_term problem.objective
-  }
+  ({ params = problem.declared_parameters
+   ; n = List.length variables
+   ; m = List.length g_rows
+   ; p = List.length equality_rows
+   ; l = List.length linear_rows
+   ; q
+   ; e = 0
+   ; g
+   ; a
+   ; c
+   ; h
+   ; b = (if List.is_empty equality_rows then None else Some b)
+   ; bool_vars_idx
+   ; int_vars_idx
+   ; column_names
+   ; objective_offset = Parsecos_affine.constant_term problem.objective
+   }
+   : Parsecos_ecos_template.t)
+;;
+
+let unresolved_params (template : Parsecos_ecos_template.t) =
+  let formulas =
+    [ Array.to_list template.c
+    ; Array.to_list template.h
+    ; Option.value_map template.b ~default:[] ~f:Array.to_list
+    ; template.objective_offset :: []
+    ; Array.to_list template.g.pr
+    ; Option.value_map template.a ~default:[] ~f:(fun matrix -> Array.to_list matrix.pr)
+    ]
+    |> List.concat
+  in
+  List.concat_map formulas ~f:Parsecos_formula.unresolved_params
+  |> List.dedup_and_sort ~compare:String.compare
+;;
+
+let to_float_array formulas =
+  Array.map formulas ~f:(fun formula ->
+    Option.value_exn (Parsecos_formula.to_float formula))
+;;
+
+let matrix_to_numeric (matrix : Parsecos_ecos_template.Matrix.t) =
+  { Parsecos_csc_matrix.pr = to_float_array matrix.pr; jc = matrix.jc; ir = matrix.ir }
+;;
+
+let to_ecos_data_result problem =
+  let template = to_ecos_template problem in
+  match unresolved_params template with
+  | [] ->
+    Ok
+      { Parsecos_ecos_data.n = template.n
+      ; m = template.m
+      ; p = template.p
+      ; l = template.l
+      ; q = template.q
+      ; e = template.e
+      ; g = matrix_to_numeric template.g
+      ; a = Option.map template.a ~f:matrix_to_numeric
+      ; c = to_float_array template.c
+      ; h = to_float_array template.h
+      ; b = Option.map template.b ~f:to_float_array
+      ; bool_vars_idx = template.bool_vars_idx
+      ; int_vars_idx = template.int_vars_idx
+      ; column_names = template.column_names
+      ; objective_offset =
+          Option.value_exn (Parsecos_formula.to_float template.objective_offset)
+      }
+  | params -> Error (Parsecos_error.Unresolved_parameters params)
+;;
+
+let to_ecos_data problem =
+  match to_ecos_data_result problem with
+  | Ok data -> data
+  | Error error -> failwith (Sexp.to_string_hum (Parsecos_error.sexp_of_t error))
 ;;

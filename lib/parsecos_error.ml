@@ -5,10 +5,14 @@ type t =
   | Json_decode of string
   | Dsl_parse of string
   | Duplicate_variable of string
+  | Duplicate_parameter of string
   | Unknown_variable of string
+  | Unknown_identifier of string
   | Expected_scalar of string
   | Expected_array1 of string
   | Expected_array2 of string
+  | Nonlinear_expression of string
+  | Unresolved_parameters of string list
   | Negative_length of
       { name : string
       ; length : int

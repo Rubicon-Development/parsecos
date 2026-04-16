@@ -48,21 +48,22 @@ let identifier =
      take_while is_identifier_continue >>| fun rest -> String.of_char first ^ rest)
 ;;
 
+let reference =
+  let indices = lex (char '[') *> sep_by1 (lex (char ',')) integer <* lex (char ']') in
+  identifier
+  >>= fun name ->
+  option None (indices >>| Option.some)
+  >>= function
+  | None -> return (Parsecos_parsed_ast.Scalar_ref name)
+  | Some [ index ] -> return (Parsecos_parsed_ast.Array1_ref { name; index })
+  | Some [ index1; index2 ] ->
+    return (Parsecos_parsed_ast.Array2_ref { name; index1; index2 })
+  | Some _ -> fail "only one or two indices are supported"
+;;
+
 let expr =
   fix (fun expr ->
     let parens = lex (char '(') *> expr <* lex (char ')') in
-    let indices = lex (char '[') *> sep_by1 (lex (char ',')) integer <* lex (char ']') in
-    let reference =
-      identifier
-      >>= fun name ->
-      option None (indices >>| Option.some)
-      >>= function
-      | None -> return (Parsecos_parsed_ast.Scalar_ref name)
-      | Some [ index ] -> return (Parsecos_parsed_ast.Array1_ref { name; index })
-      | Some [ index1; index2 ] ->
-        return (Parsecos_parsed_ast.Array2_ref { name; index1; index2 })
-      | Some _ -> fail "only one or two indices are supported"
-    in
     let atom =
       choice
         [ parens
@@ -71,20 +72,18 @@ let expr =
         ]
     in
     let negated expr = Parsecos_parsed_ast.Scale { coefficient = -1.0; expr } in
-    let term =
-      choice
-        [ lift2
-            (fun coefficient expr -> Parsecos_parsed_ast.Scale { coefficient; expr })
-            (number <* lex (char '*'))
-            atom
-        ; lex (char '-') *> atom >>| negated
-        ; atom
-        ]
+    let unary = choice [ lex (char '-') *> atom >>| negated; atom ] in
+    let product =
+      unary
+      >>= fun first ->
+      many (lex (char '*') *> unary)
+      >>| List.fold ~init:first ~f:(fun left right ->
+        Parsecos_parsed_ast.Mul (left, right))
     in
     let operator = lex (char '+' >>| (fun _ -> `Add) <|> (char '-' >>| fun _ -> `Sub)) in
-    term
+    product
     >>= fun first ->
-    many (lift2 (fun operator rhs -> operator, rhs) operator term)
+    many (lift2 (fun operator rhs -> operator, rhs) operator product)
     >>| List.fold ~init:first ~f:(fun acc (operator, rhs) ->
       match operator with
       | `Add -> Parsecos_parsed_ast.Sum [ acc; rhs ]
@@ -100,8 +99,9 @@ let domain =
        ])
 ;;
 
+let dimensions = lex (char '[') *> sep_by1 (lex (char ',')) integer <* lex (char ']')
+
 let var_decl =
-  let dimensions = lex (char '[') *> sep_by1 (lex (char ',')) integer <* lex (char ']') in
   domain
   >>= fun domain ->
   identifier
@@ -112,6 +112,17 @@ let var_decl =
   | Some [ length ] -> return (Parsecos_parsed_ast.Array1 { name; domain; length })
   | Some [ dim1; dim2 ] ->
     return (Parsecos_parsed_ast.Array2 { name; domain; dim1; dim2 })
+  | Some _ -> fail "only one or two dimensions are supported"
+;;
+
+let param_decl =
+  identifier
+  >>= fun name ->
+  option None (dimensions >>| Option.some)
+  >>= function
+  | None -> return (Parsecos_param.scalar name)
+  | Some [ length ] -> return (Parsecos_param.array1 ~name ~length)
+  | Some [ dim1; dim2 ] -> return (Parsecos_param.array2 ~name ~dim1 ~dim2)
   | Some _ -> fail "only one or two dimensions are supported"
 ;;
 
@@ -136,7 +147,7 @@ let constraint_ =
          ))
 ;;
 
-let parameter =
+let parameter_value =
   identifier
   >>= fun name ->
   lex (char '=') *> lex (char '[') *> sep_by (lex (char ',')) number
@@ -323,10 +334,18 @@ let parse_for_header line_number line =
     dsl_error line_number (Printf.sprintf "%s while parsing loop header" message))
 ;;
 
-let parse_parameter line_number line =
-  parse_all (whitespace *> parameter <* whitespace) line
+let parse_parameter_value line_number line =
+  parse_all (whitespace *> parameter_value <* whitespace) line
   |> Result.map_error ~f:(fun message ->
     dsl_error line_number (Printf.sprintf "%s while parsing parameter" message))
+;;
+
+let parse_param_decl line_number line =
+  parse_all (whitespace *> param_decl <* whitespace) line
+  |> Result.map_error ~f:(fun message ->
+    dsl_error
+      line_number
+      (Printf.sprintf "%s while parsing parameter declaration" message))
 ;;
 
 let rec take_loop_body start_line depth acc = function
@@ -378,62 +397,105 @@ let rec expand_lines ~params ~index_env = function
             (line_number, expanded_line) :: tail))
 ;;
 
-let collect_params lines =
+let collect_param_values lines =
   List.fold_result lines ~init:String.Map.empty ~f:(fun params (line_number, line) ->
-    Result.bind (parse_parameter line_number line) ~f:(fun (name, values) ->
+    Result.bind (parse_parameter_value line_number line) ~f:(fun (name, values) ->
       if Map.mem params name
       then Error (dsl_error line_number (Printf.sprintf "duplicate parameter %s" name))
       else Ok (Map.set params ~key:name ~data:values)))
 ;;
 
-let model text =
+let parse_sections text =
   let lines = String.split_lines text in
-  let parse_lines =
-    List.foldi lines ~init:(Ok empty) ~f:(fun index acc_result raw_line ->
-      let line_number = index + 1 in
-      let line = String.strip raw_line in
-      Result.bind acc_result ~f:(fun acc ->
-        if String.is_empty line || String.is_prefix line ~prefix:"#"
-        then Ok acc
-        else if String.is_prefix line ~prefix:"params:"
-        then
-          handle_header acc Params (String.strip (String.drop_prefix line 7)) line_number
-        else if String.is_prefix line ~prefix:"vars:"
-        then handle_header acc Vars (String.strip (String.drop_prefix line 5)) line_number
-        else if String.is_prefix line ~prefix:"minimize:"
-        then
-          handle_header
-            acc
-            Minimize
-            (String.strip (String.drop_prefix line 9))
-            line_number
-        else if String.is_prefix line ~prefix:"subject to:"
-        then
-          handle_header
-            acc
-            Constraints
-            (String.strip (String.drop_prefix line 11))
-            line_number
-        else if String.is_prefix line ~prefix:"constraints:"
-        then
-          handle_header
-            acc
-            Constraints
-            (String.strip (String.drop_prefix line 12))
-            line_number
-        else add_line acc line_number line))
-  in
-  Result.bind parse_lines ~f:(fun acc ->
+  List.foldi lines ~init:(Ok empty) ~f:(fun index acc_result raw_line ->
+    let line_number = index + 1 in
+    let line = String.strip raw_line in
+    Result.bind acc_result ~f:(fun acc ->
+      if String.is_empty line || String.is_prefix line ~prefix:"#"
+      then Ok acc
+      else if String.is_prefix line ~prefix:"params:"
+      then handle_header acc Params (String.strip (String.drop_prefix line 7)) line_number
+      else if String.is_prefix line ~prefix:"vars:"
+      then handle_header acc Vars (String.strip (String.drop_prefix line 5)) line_number
+      else if String.is_prefix line ~prefix:"minimize:"
+      then
+        handle_header acc Minimize (String.strip (String.drop_prefix line 9)) line_number
+      else if String.is_prefix line ~prefix:"subject to:"
+      then
+        handle_header
+          acc
+          Constraints
+          (String.strip (String.drop_prefix line 11))
+          line_number
+      else if String.is_prefix line ~prefix:"constraints:"
+      then
+        handle_header
+          acc
+          Constraints
+          (String.strip (String.drop_prefix line 12))
+          line_number
+      else add_line acc line_number line))
+;;
+
+let parse_line parser kind (line_number, line) =
+  parse_all (whitespace *> parser <* whitespace) line
+  |> Result.map_error ~f:(fun message ->
+    Parsecos_error.Dsl_parse
+      (Printf.sprintf "line %d: %s while parsing %s" line_number message kind))
+;;
+
+let build_model ~params ~vars ~objective_lines ~constraint_lines =
+  Result.bind
+    (List.map vars ~f:(parse_line var_decl "variable declaration") |> Result.all)
+    ~f:(fun vars ->
+      Result.bind
+        (parse_all
+           (whitespace *> expr <* whitespace)
+           (objective_lines |> List.map ~f:snd |> String.concat ~sep:" + ")
+         |> Result.map_error ~f:(fun message ->
+           Parsecos_error.Dsl_parse (Printf.sprintf "objective: %s" message)))
+        ~f:(fun objective ->
+          Result.map
+            (List.map constraint_lines ~f:(parse_line constraint_ "constraint")
+             |> Result.all)
+            ~f:(fun constraints ->
+              ({ params; vars; objective = Minimize objective; constraints }
+               : Parsecos_parsed_ast.model))))
+;;
+
+let model text =
+  Result.bind (parse_sections text) ~f:(fun acc ->
     if List.is_empty acc.objective
     then Error (Parsecos_error.Dsl_parse "missing minimize section")
-    else (
-      let parse_line parser kind (line_number, line) =
-        parse_all (whitespace *> parser <* whitespace) line
-        |> Result.map_error ~f:(fun message ->
-          Parsecos_error.Dsl_parse
-            (Printf.sprintf "line %d: %s while parsing %s" line_number message kind))
-      in
-      Result.bind (collect_params acc.params) ~f:(fun params ->
+    else
+      Result.bind
+        (List.map acc.params ~f:(fun (line_number, line) ->
+           parse_param_decl line_number line)
+         |> Result.all)
+        ~f:(fun params ->
+          Result.bind
+            (expand_lines
+               ~params:String.Map.empty
+               ~index_env:String.Map.empty
+               acc.objective)
+            ~f:(fun objective_lines ->
+              Result.bind
+                (expand_lines
+                   ~params:String.Map.empty
+                   ~index_env:String.Map.empty
+                   acc.constraints)
+                ~f:(fun constraint_lines ->
+                  build_model ~params ~vars:acc.vars ~objective_lines ~constraint_lines))))
+;;
+
+let template_problem text = Result.bind (model text) ~f:Parsecos_elaborate.problem
+
+let problem text =
+  Result.bind (parse_sections text) ~f:(fun acc ->
+    if List.is_empty acc.objective
+    then Error (Parsecos_error.Dsl_parse "missing minimize section")
+    else
+      Result.bind (collect_param_values acc.params) ~f:(fun params ->
         Result.bind
           (expand_lines ~params ~index_env:String.Map.empty acc.objective)
           ~f:(fun objective_lines ->
@@ -441,24 +503,10 @@ let model text =
               (expand_lines ~params ~index_env:String.Map.empty acc.constraints)
               ~f:(fun constraint_lines ->
                 Result.bind
-                  (List.map acc.vars ~f:(parse_line var_decl "variable declaration")
-                   |> Result.all)
-                  ~f:(fun vars ->
-                    Result.bind
-                      (parse_all
-                         (whitespace *> expr <* whitespace)
-                         (objective_lines |> List.map ~f:snd |> String.concat ~sep:" + ")
-                       |> Result.map_error ~f:(fun message ->
-                         Parsecos_error.Dsl_parse (Printf.sprintf "objective: %s" message))
-                      )
-                      ~f:(fun objective ->
-                        List.map constraint_lines ~f:(parse_line constraint_ "constraint")
-                        |> Result.all
-                        |> Result.map ~f:(fun constraints ->
-                          { Parsecos_parsed_ast.vars
-                          ; objective = Minimize objective
-                          ; constraints
-                          }))))))))
+                  (build_model
+                     ~params:[]
+                     ~vars:acc.vars
+                     ~objective_lines
+                     ~constraint_lines)
+                  ~f:Parsecos_elaborate.problem))))
 ;;
-
-let problem text = Result.bind (model text) ~f:Parsecos_elaborate.problem

@@ -1,8 +1,11 @@
 module Var = Parsecos_var
+module Param = Parsecos_param
+module Formula = Parsecos_formula
 module Affine = Parsecos_affine
 module Constraint = Parsecos_constraint
 module Csc_matrix = Parsecos_csc_matrix
 module Ecos_data = Parsecos_ecos_data
+module Ecos_template = Parsecos_ecos_template
 module Error = Parsecos_error
 module Problem = Parsecos_problem
 module Parsed_ast = Parsecos_parsed_ast
@@ -13,6 +16,9 @@ module Dsl = Parsecos_dsl
 val problem_of_json : Yojson.Safe.t -> (Problem.t, Error.t) result
 val problem_of_json_string : string -> (Problem.t, Error.t) result
 val problem_of_text : string -> (Problem.t, Error.t) result
+val ecos_template_of_json : Yojson.Safe.t -> (Ecos_template.t, Error.t) result
+val ecos_template_of_json_string : string -> (Ecos_template.t, Error.t) result
+val ecos_template_of_text : string -> (Ecos_template.t, Error.t) result
 val ecos_data_of_json : Yojson.Safe.t -> (Ecos_data.t, Error.t) result
 val ecos_data_of_json_string : string -> (Ecos_data.t, Error.t) result
 val ecos_data_of_text : string -> (Ecos_data.t, Error.t) result

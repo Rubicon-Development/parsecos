@@ -9,7 +9,9 @@ end
 
 type env =
   { bindings : Binding.t String.Map.t
+  ; params : Parsecos_param.t String.Map.t
   ; declared_variables : Parsecos_var.t list
+  ; declared_parameters : Parsecos_param.t list
   }
 
 let domain = function
@@ -18,21 +20,63 @@ let domain = function
   | Integer -> Parsecos_var.Domain.Integer
 ;;
 
+let add_param env (param : Parsecos_param.t) =
+  if Map.mem env.params param.name || Map.mem env.bindings param.name
+  then Error (Parsecos_error.Duplicate_parameter param.name)
+  else if Array.length param.dimensions > 2
+  then
+    Error
+      (Parsecos_error.Dsl_parse
+         (Printf.sprintf "parameter %s supports at most two dimensions" param.name))
+  else if Array.exists param.dimensions ~f:(fun length -> length < 0)
+  then (
+    match Array.length param.dimensions with
+    | 1 ->
+      Error
+        (Parsecos_error.Negative_length
+           { name = param.name; length = param.dimensions.(0) })
+    | 2 ->
+      let axis = if param.dimensions.(0) < 0 then 1 else 2 in
+      let length = param.dimensions.(axis - 1) in
+      Error (Parsecos_error.Negative_dimension { name = param.name; axis; length })
+    | _ ->
+      Error
+        (Parsecos_error.Dsl_parse
+           (Printf.sprintf
+              "parameter %s supports only scalar, vector, or matrix shapes"
+              param.name)))
+  else
+    Ok
+      { env with
+        params = Map.set env.params ~key:param.name ~data:param
+      ; declared_parameters = env.declared_parameters @ [ param ]
+      }
+;;
+
 let add_binding env name binding declared_variables =
-  if Map.mem env.bindings name
+  if Map.mem env.bindings name || Map.mem env.params name
   then Error (Parsecos_error.Duplicate_variable name)
   else
     Ok
-      { bindings = Map.set env.bindings ~key:name ~data:binding
+      { env with
+        bindings = Map.set env.bindings ~key:name ~data:binding
       ; declared_variables = env.declared_variables @ declared_variables
       }
 ;;
 
-let build_env vars =
-  List.fold_result
-    vars
-    ~init:{ bindings = String.Map.empty; declared_variables = [] }
-    ~f:(fun env decl ->
+let build_env params vars =
+  let init =
+    { bindings = String.Map.empty
+    ; params = String.Map.empty
+    ; declared_variables = []
+    ; declared_parameters = []
+    }
+  in
+  let with_params =
+    List.fold_result params ~init ~f:(fun env param -> add_param env param)
+  in
+  Result.bind with_params ~f:(fun env ->
+    List.fold_result vars ~init:env ~f:(fun env decl ->
       match decl with
       | Parsecos_parsed_ast.Scalar { name; domain = var_domain } ->
         let variable = Parsecos_var.create ~name ~domain:(domain var_domain) in
@@ -55,55 +99,132 @@ let build_env vars =
           let declared_variables =
             Array.to_list family.vars |> List.concat_map ~f:Array.to_list
           in
-          add_binding env name (Binding.Array2 family) declared_variables))
+          add_binding env name (Binding.Array2 family) declared_variables)))
 ;;
 
-let lookup env name =
-  Map.find env.bindings name
-  |> Result.of_option ~error:(Parsecos_error.Unknown_variable name)
-;;
+let lookup_var env name = Map.find env.bindings name
+let lookup_param env name = Map.find env.params name
 
-let resolve_reference env = function
+let resolve_var_reference env = function
   | Parsecos_parsed_ast.Scalar_ref name ->
-    Result.bind (lookup env name) ~f:(function
-      | Binding.Scalar variable -> Ok variable
-      | Array1 _ -> Error (Parsecos_error.Expected_scalar name)
-      | Array2 _ -> Error (Parsecos_error.Expected_scalar name))
+    Result.bind
+      (lookup_var env name
+       |> Result.of_option ~error:(Parsecos_error.Unknown_identifier name))
+      ~f:(function
+        | Binding.Scalar variable -> Ok variable
+        | Array1 _ -> Error (Parsecos_error.Expected_scalar name)
+        | Array2 _ -> Error (Parsecos_error.Expected_scalar name))
   | Array1_ref { name; index } ->
-    Result.bind (lookup env name) ~f:(function
-      | Scalar _ -> Error (Parsecos_error.Expected_array1 name)
-      | Array2 _ -> Error (Parsecos_error.Expected_array1 name)
-      | Array1 family ->
-        let length = Array.length family.vars in
-        if index < 0 || index >= length
-        then Error (Parsecos_error.Index_out_of_bounds { name; index; length })
-        else Ok family.vars.(index))
+    Result.bind
+      (lookup_var env name
+       |> Result.of_option ~error:(Parsecos_error.Unknown_identifier name))
+      ~f:(function
+        | Scalar _ -> Error (Parsecos_error.Expected_array1 name)
+        | Array2 _ -> Error (Parsecos_error.Expected_array1 name)
+        | Array1 family ->
+          let length = Array.length family.vars in
+          if index < 0 || index >= length
+          then Error (Parsecos_error.Index_out_of_bounds { name; index; length })
+          else Ok family.vars.(index))
   | Array2_ref { name; index1; index2 } ->
-    Result.bind (lookup env name) ~f:(function
-      | Scalar _ -> Error (Parsecos_error.Expected_array2 name)
-      | Array1 _ -> Error (Parsecos_error.Expected_array2 name)
-      | Array2 family ->
-        let dim1 = Array.length family.vars in
-        if index1 < 0 || index1 >= dim1
-        then
-          Error
-            (Parsecos_error.Index2_out_of_bounds
-               { name; axis = 1; index = index1; length = dim1 })
-        else (
-          let row = family.vars.(index1) in
-          let dim2 = Array.length row in
-          if index2 < 0 || index2 >= dim2
+    Result.bind
+      (lookup_var env name
+       |> Result.of_option ~error:(Parsecos_error.Unknown_identifier name))
+      ~f:(function
+        | Scalar _ -> Error (Parsecos_error.Expected_array2 name)
+        | Array1 _ -> Error (Parsecos_error.Expected_array2 name)
+        | Array2 family ->
+          let dim1 = Array.length family.vars in
+          if index1 < 0 || index1 >= dim1
           then
             Error
               (Parsecos_error.Index2_out_of_bounds
-                 { name; axis = 2; index = index2; length = dim2 })
-          else Ok row.(index2)))
+                 { name; axis = 1; index = index1; length = dim1 })
+          else (
+            let row = family.vars.(index1) in
+            let dim2 = Array.length row in
+            if index2 < 0 || index2 >= dim2
+            then
+              Error
+                (Parsecos_error.Index2_out_of_bounds
+                   { name; axis = 2; index = index2; length = dim2 })
+            else Ok row.(index2)))
+;;
+
+let resolve_param_reference env reference =
+  let reference_name, indices =
+    match reference with
+    | Parsecos_parsed_ast.Scalar_ref name -> name, []
+    | Array1_ref { name; index } -> name, [ index ]
+    | Array2_ref { name; index1; index2 } -> name, [ index1; index2 ]
+  in
+  Result.bind
+    (lookup_param env reference_name
+     |> Result.of_option ~error:(Parsecos_error.Unknown_identifier reference_name))
+    ~f:(fun param ->
+      let rank = Array.length param.dimensions in
+      if List.length indices <> rank
+      then (
+        match rank with
+        | 0 -> Error (Parsecos_error.Expected_scalar reference_name)
+        | 1 -> Error (Parsecos_error.Expected_array1 reference_name)
+        | _ -> Error (Parsecos_error.Expected_array2 reference_name))
+      else (
+        let check_bounds axis index length =
+          if index < 0 || index >= length
+          then
+            if axis = 1 && rank = 1
+            then
+              Error
+                (Parsecos_error.Index_out_of_bounds
+                   { name = reference_name; index; length })
+            else
+              Error
+                (Parsecos_error.Index2_out_of_bounds
+                   { name = reference_name; axis; index; length })
+          else Ok ()
+        in
+        Result.bind
+          (List.mapi indices ~f:(fun axis index ->
+             check_bounds (axis + 1) index param.dimensions.(axis))
+           |> Result.all_unit)
+          ~f:(fun () -> Ok (Parsecos_formula.param ~name:reference_name ~indices))))
+;;
+
+let affine_of_reference env reference =
+  match resolve_var_reference env reference with
+  | Ok variable -> Ok (Parsecos_affine.of_var variable)
+  | Error (Parsecos_error.Unknown_identifier _) ->
+    Result.map (resolve_param_reference env reference) ~f:Parsecos_affine.of_formula
+  | Error error -> Error error
+;;
+
+let is_scalar expr = Set.is_empty (Parsecos_affine.vars expr)
+
+let unsupported_product () =
+  Error
+    (Parsecos_error.Nonlinear_expression
+       "products may only multiply a parameter-affine scalar by a parameter-free affine \
+        expression")
+;;
+
+let scale_by_expr factor expr =
+  if Parsecos_formula.is_constant factor || Parsecos_affine.is_param_free expr
+  then Parsecos_affine.scale_formula factor expr
+  else unsupported_product ()
 ;;
 
 let rec affine env = function
   | Parsecos_parsed_ast.Constant value -> Ok (Parsecos_affine.constant value)
-  | Var reference ->
-    Result.map (resolve_reference env reference) ~f:Parsecos_affine.of_var
+  | Var reference -> affine_of_reference env reference
+  | Mul (left, right) ->
+    Result.bind (affine env left) ~f:(fun left ->
+      Result.bind (affine env right) ~f:(fun right ->
+        if is_scalar left
+        then scale_by_expr (Parsecos_affine.constant_term left) right
+        else if is_scalar right
+        then scale_by_expr (Parsecos_affine.constant_term right) left
+        else unsupported_product ()))
   | Sum exprs ->
     List.fold_result exprs ~init:Parsecos_affine.zero ~f:(fun acc expr ->
       Result.map (affine env expr) ~f:(Parsecos_affine.add acc))
@@ -140,7 +261,7 @@ let constraint_ env = function
 ;;
 
 let problem model =
-  Result.bind (build_env model.Parsecos_parsed_ast.vars) ~f:(fun env ->
+  Result.bind (build_env model.Parsecos_parsed_ast.params model.vars) ~f:(fun env ->
     Result.bind
       (match model.objective with
        | Minimize expr -> affine env expr)
@@ -152,5 +273,7 @@ let problem model =
             |> fun problem ->
             Parsecos_problem.subject_to problem constraints
             |> fun problem ->
-            Parsecos_problem.with_declared_variables problem env.declared_variables)))
+            Parsecos_problem.with_declared_variables problem env.declared_variables
+            |> fun problem ->
+            Parsecos_problem.with_declared_parameters problem env.declared_parameters)))
 ;;

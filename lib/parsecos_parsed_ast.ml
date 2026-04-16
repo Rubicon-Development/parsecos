@@ -1,6 +1,8 @@
 open! Core
 open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
+type param_decl = Parsecos_param.t [@@deriving sexp_of, yojson]
+
 type domain =
   | Continuous
   | Boolean
@@ -41,6 +43,7 @@ type reference =
 type expr =
   | Constant of float
   | Var of reference
+  | Mul of expr * expr
   | Sum of expr list
   | Sub of expr * expr
   | Scale of
@@ -71,7 +74,8 @@ type constraint_ =
 type objective = Minimize of expr [@@deriving sexp_of, yojson]
 
 type model =
-  { vars : var_decl list
+  { params : param_decl list
+  ; vars : var_decl list
   ; objective : objective
   ; constraints : constraint_ list
   }
